@@ -3,3 +3,7 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .DS_Store
+
+# Archive/export output folders (e.g. "MyApp 2026-...-...")
+MyApp *
+*.app

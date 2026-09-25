@@ -98,6 +98,12 @@ struct IconApplier {
     /// "App Management" TCC grant vs. a genuine I/O error) we probe write
     /// access at the same location setIcon needs to write to, before calling it.
     private static func probeWritable(appPath: String) throws {
+        // Plain POSIX permissions are checked first: a bundle owned by root
+        // (typical for .pkg installs) can't be written no matter what TCC
+        // grants, so pointing the user at App Management would be wrong.
+        if !isOwnedOrWritableByCurrentUser(appPath: appPath) {
+            throw IconSwapError.ownedByAnotherUser(path: appPath)
+        }
         let probeURL = URL(fileURLWithPath: appPath)
             .appendingPathComponent(".iconswap-probe-\(UUID().uuidString)")
         do {
@@ -109,6 +115,45 @@ struct IconApplier {
                 throw IconSwapError.permissionDenied(path: appPath)
             }
             throw IconSwapError.permissionDenied(path: appPath)
+        }
+    }
+
+    private static func isOwnedOrWritableByCurrentUser(appPath: String) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: appPath),
+              let owner = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value,
+              let permissions = (attributes[.posixPermissions] as? NSNumber)?.uint16Value
+        else { return true }
+        if owner == getuid() { return true }
+        // Group/other write bits; group membership isn't resolved here, so
+        // a group-writable bundle is given the benefit of the doubt.
+        return permissions & 0o022 != 0
+    }
+
+    /// Makes the current user the owner of the bundle's top-level folder
+    /// only (not recursive — nothing inside Contents/ changes), which is all
+    /// setIcon needs. Asks for an administrator password via the standard
+    /// macOS prompt. The path is passed as an argument, never spliced into
+    /// the script source, so it can't inject shell or AppleScript code.
+    nonisolated static func takeOwnership(ofAppAt appPath: String) async throws {
+        let script = """
+        on run argv
+            do shell script "/usr/sbin/chown " & (item 1 of argv) & " " & quoted form of (item 2 of argv) with administrator privileges
+        end run
+        """
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script, String(getuid()), appPath]
+        // The handler is set before launching so a fast exit can't be missed.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            task.terminationHandler = { _ in continuation.resume() }
+            do {
+                try task.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+        guard task.terminationStatus == 0 else {
+            throw IconSwapError.ownedByAnotherUser(path: appPath)
         }
     }
 
@@ -131,14 +176,7 @@ extension IconApplier {
         guard let bundleID = app.bundleIdentifier else {
             throw IconSwapError.appNotFound(path: app.path)
         }
-        guard let remoteURL = hit.iconURL else {
-            throw IconSwapError.invalidImage(url: URL(fileURLWithPath: app.path))
-        }
-
-        let (data, response) = try await URLSession.shared.data(from: remoteURL)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw IconSwapError.downloadFailed(underlying: URLError(.badServerResponse))
-        }
+        let data = try await iconData(for: hit)
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -160,6 +198,45 @@ extension IconApplier {
             author: hit.usersName,
             sourceURL: hit.authorURL?.absoluteString ?? hit.uploadedBy,
             cachedIconPath: cachedURL.path
+        )
+        try await IconStore.shared.setRecord(record, for: bundleID)
+    }
+
+    /// The hit's .icns bytes, from the local copy when a previous Apply
+    /// already downloaded it.
+    nonisolated static func iconData(for hit: IconHit) async throws -> Data {
+        let cachedURL = Paths.cachedIconURL(objectID: hit.objectID)
+        if let cached = try? Data(contentsOf: cachedURL), !cached.isEmpty {
+            return cached
+        }
+        guard let remoteURL = hit.iconURL else {
+            throw IconSwapError.invalidImage(url: cachedURL)
+        }
+        let (data, response) = try await URLSession.shared.data(from: remoteURL)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw IconSwapError.downloadFailed(underlying: URLError(.badServerResponse))
+        }
+        return data
+    }
+
+    /// Applies an already-rendered custom icon (PNG bytes) and records it in
+    /// IconStore like a macOSicons pick, so the Restorer reapplies it too.
+    nonisolated static func apply(customPNG data: Data, sourceURL: URL, to app: InstalledApp) async throws {
+        guard let bundleID = app.bundleIdentifier else {
+            throw IconSwapError.appNotFound(path: app.path)
+        }
+        let renderedURL = Paths.renderedCustomIconURL(bundleID: bundleID)
+        try data.write(to: renderedURL, options: .atomic)
+        try apply(imageURL: renderedURL, toAppAt: app.path, bundleID: bundleID)
+
+        let record = IconStoreRecord(
+            iconURL: sourceURL.absoluteString,
+            previewURL: renderedURL.absoluteString,
+            appliedAt: Date(),
+            appVersion: app.version,
+            author: "Своя иконка",
+            sourceURL: sourceURL.absoluteString,
+            cachedIconPath: renderedURL.path
         )
         try await IconStore.shared.setRecord(record, for: bundleID)
     }

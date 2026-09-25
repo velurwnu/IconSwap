@@ -27,7 +27,17 @@ enum Paths {
         return dir
     }()
 
+    /// Images the user imported as their own icons (copied, so the
+    /// originals can be moved or deleted without breaking the library).
+    static let customIcons: URL = {
+        let dir = applicationSupport.appendingPathComponent("custom-icons", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     static let storeFile: URL = applicationSupport.appendingPathComponent("store.json")
+
+    static let searchCacheFile: URL = applicationSupport.appendingPathComponent("search-cache.json")
 
     static let launchAgentLabel = "com.velurwnu.IconSwap.restorer"
 
@@ -39,6 +49,12 @@ enum Paths {
 
     static func backupURL(for bundleID: String) -> URL {
         backups.appendingPathComponent("\(bundleID).icns")
+    }
+
+    /// The rendered (template-applied) custom icon last set on an app, kept
+    /// so the Restorer can reapply it after updates.
+    static func renderedCustomIconURL(bundleID: String) -> URL {
+        icons.appendingPathComponent("custom-\(bundleID).png")
     }
 
     static func cachedIconURL(objectID: String) -> URL {

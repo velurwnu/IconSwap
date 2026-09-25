@@ -2,7 +2,7 @@ import Foundation
 
 /// Modeled on the actual macosicons.com /api/search response (verified with
 /// a live request), not on the field names implied by the docs.
-struct IconSearchResponse: Decodable {
+struct IconSearchResponse: Codable {
     let hits: [IconHit]
     let query: String
     let page: Int
@@ -10,7 +10,7 @@ struct IconSearchResponse: Decodable {
     let totalHits: Int
 }
 
-struct IconHit: Decodable, Identifiable, Hashable {
+struct IconHit: Codable, Identifiable, Hashable {
     let objectID: String
     let appName: String
     let icnsUrl: String

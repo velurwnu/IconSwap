@@ -21,7 +21,32 @@ struct AppScanner {
                 }
             }
         }
+        // Apps the user added by hand from elsewhere on disk. Part of the
+        // scan (not just the UI list) so the Restorer finds them too.
+        for path in addedAppPaths where seenPaths.insert(path).inserted {
+            if let app = makeApp(atPath: path) {
+                apps.append(app)
+            }
+        }
         return apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private static let addedAppsKey = "addedAppPaths"
+
+    static var addedAppPaths: [String] {
+        UserDefaults.standard.stringArray(forKey: addedAppsKey) ?? []
+    }
+
+    static func addAppPaths(_ paths: [String]) {
+        var current = addedAppPaths
+        for path in paths where !current.contains(path) {
+            current.append(path)
+        }
+        UserDefaults.standard.set(current, forKey: addedAppsKey)
+    }
+
+    static func removeAddedAppPath(_ path: String) {
+        UserDefaults.standard.set(addedAppPaths.filter { $0 != path }, forKey: addedAppsKey)
     }
 
     private static func makeApp(atPath path: String) -> InstalledApp? {
